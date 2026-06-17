@@ -1,20 +1,27 @@
 import asyncio
 import logging
+import re
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 
 from database import get_ticket, get_random_tickets
 
 # ⚠️ ТВОЙ ТОКЕН ОТ @BotFather
 BOT_TOKEN = "8955256805:AAExlc9_l0nQS42EkjI5B_c95qNJfZt8eY8"
 
-# Настройка логирования (чтобы видеть в консоли, что бот работает)
+# Настройка логирования
 logging.basicConfig(level=logging.INFO)
 
-# Инициализация бота и диспетчера (БЕЗ ПРОКСИ, чистый код)
+# Инициализация бота и диспетчера
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+
+# --- Состояния FSM для режима "Активное вспоминание" ---
+class RecallStates(StatesGroup):
+    waiting_for_answer = State()
 
 # --- Клавиатуры ---
 def get_main_menu():
@@ -22,16 +29,36 @@ def get_main_menu():
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📖 Режим чтения (по номеру)", callback_data="mode_read")],
         [InlineKeyboardButton(text="🎲 Рандом-экзамен (2 билета)", callback_data="mode_random")],
-        [InlineKeyboardButton(text="🧠 Активное вспоминание", callback_data="mode_recall")], # Пока заглушка
+        [InlineKeyboardButton(text="🧠 Активное вспоминание", callback_data="mode_recall")],
         [InlineKeyboardButton(text="💻 Код-ревью", callback_data="mode_code")] # Пока заглушка
     ])
     return keyboard
 
+# --- Вспомогательная функция для генерации пропусков ---
+def generate_cloze(theory: str, keywords: str) -> str:
+    """Заменяет ключевые слова в теории на ***"""
+    if not keywords:
+        return theory
+    
+    # Разбиваем строку keywords на список слов
+    words = [w.strip() for w in keywords.split(',')]
+    cloze_text = theory
+    
+    for word in words:
+        # Заменяем слово на ***, игнорируя регистр
+        pattern = re.compile(re.escape(word), re.IGNORECASE)
+        cloze_text = pattern.sub('***', cloze_text)
+    
+    return cloze_text
+
 # --- Обработчики команд и сообщений ---
 
 @dp.message(Command("start"))
-async def cmd_start(message: Message):
+async def cmd_start(message: Message, state: FSMContext):
     """Обработчик команды /start"""
+    # Сбрасываем состояние FSM, если пользователь нажал /start в середине режима
+    await state.clear()
+    
     welcome_text = (
         "👋 Привет! Я твой интерактивный помощник для подготовки к экзамену по АОСД.\n\n"
         "Здесь ты найдешь эталонные ответы, код на Си и интерактивные режимы для проверки знаний.\n"
@@ -56,7 +83,7 @@ async def process_ticket_number(message: Message):
     ticket = await get_ticket(ticket_id)
     
     if not ticket:
-        await message.answer(f"❌ Билет №{ticket_id} не найден. Проверь номер и попробуй снова (доступны: 9, 35, 64).")
+        await message.answer(f"❌ Билет №{ticket_id} не найден. Проверь номер и попробуй снова (доступны билеты с 1 по 64).")
         return
 
     # Формируем красивое сообщение с HTML-разметкой для подсветки кода
@@ -67,7 +94,6 @@ async def process_ticket_number(message: Message):
     )
     
     if ticket['code']:
-        # Telegram поддерживает подсветку синтаксиса через class='language-c' внутри pre/code
         response_text += f"💻 <b>Код на Си:</b>\n<pre><code class='language-c'>{ticket['code']}</code></pre>\n\n"
         
     response_text += "<i>Напиши /start, чтобы вернуться в главное меню.</i>"
@@ -86,7 +112,6 @@ async def process_mode_random(callback: types.CallbackQuery):
 
     response_text = "🎲 <b>Твой рандом-экзамен (2 билета):</b>\n\n"
     for t in tickets:
-        # Показываем тему и начало теории, чтобы не спамить огромным текстом
         short_theory = t['theory'][:150] + "..." if len(t['theory']) > 150 else t['theory']
         response_text += f"🎫 <b>Билет №{t['id']}:</b> {t['title']}\n"
         response_text += f"📚 {short_theory}\n\n"
@@ -95,8 +120,99 @@ async def process_mode_random(callback: types.CallbackQuery):
     
     await callback.message.edit_text(response_text, parse_mode="HTML", reply_markup=get_main_menu())
 
-# --- Заглушки для будущих режимов ---
-@dp.callback_query(F.data.in_(["mode_recall", "mode_code"]))
+# --- Режим "Активное вспоминание" ---
+
+@dp.callback_query(F.data == "mode_recall")
+async def process_mode_recall(callback: types.CallbackQuery, state: FSMContext):
+    """Обработчик нажатия на кнопку 'Активное вспоминание'"""
+    await callback.answer("🧠 Генерирую билет с пропусками...")
+    
+    # Получаем случайный билет
+    tickets = await get_random_tickets(1)
+    if not tickets:
+        await callback.message.edit_text("❌ В базе данных пока нет билетов.")
+        return
+    
+    ticket = tickets[0]
+    theory = ticket['theory']
+    keywords = ticket['keywords']
+    
+    # Генерируем текст с пропусками
+    cloze_text = generate_cloze(theory, keywords)
+    
+    # Сохраняем данные билета в FSM, чтобы потом проверить ответ
+    await state.update_data(ticket_id=ticket['id'], keywords=keywords)
+    
+    # Отправляем пользователю билет с пропусками
+    await callback.message.edit_text(
+        f"🧠 <b>Режим 'Активное вспоминание'</b>\n\n"
+        f"🎫 <b>Билет №{ticket['id']}</b>: {ticket['title']}\n\n"
+        f"{cloze_text}\n\n"
+        f"💡 <i>Вспомни пропущенные слова и напиши их через запятую (например: слово1, слово2).</i>\n"
+        f"Чтобы выйти, напиши /start.",
+        parse_mode="HTML"
+    )
+    
+    # Устанавливаем состояние "ждем ответа"
+    await state.set_state(RecallStates.waiting_for_answer)
+
+@dp.message(RecallStates.waiting_for_answer)
+async def process_recall_answer(message: Message, state: FSMContext):
+    """Обработчик ответа пользователя с умной проверкой"""
+    data = await state.get_data()
+    keywords_str = data.get('keywords', '')
+    ticket_id = data.get('ticket_id')
+    
+    # 1. Разбираем эталонные ответы (убираем пробелы по краям, приводим к нижнему регистру)
+    correct_words = [w.strip().lower() for w in keywords_str.split(',') if w.strip()]
+    user_text = message.text.lower()
+    
+    # 2. Проверяем, какие слова есть в ответе пользователя, а каких не хватает
+    found_words = []
+    missing_words = []
+    
+    for word in correct_words:
+        if word in user_text:
+            found_words.append(word)
+        else:
+            missing_words.append(word)
+            
+    # 3. Формируем красивый ответ бота в зависимости от результата
+    if not missing_words:
+        result_text = f"🎉 <b>Отлично!</b> Ты вспомнил все ключевые термины для билета №{ticket_id}!\n\n"
+    elif found_words:
+        result_text = f"👍 <b>Хорошая попытка!</b> Ты вспомнил: <i>{', '.join(found_words)}</i>.\n"
+        result_text += f"Но забыл: <b>{', '.join(missing_words)}</b>.\n\n"
+    else:
+        result_text = f"❌ <b>Не совсем.</b> Вот какие слова нужно было вспомнить:\n"
+        result_text += f"<b>{', '.join(correct_words)}</b>\n\n"
+        
+    result_text += "Попробуем еще один билет или вернемся в меню?"
+    
+    # 4. Создаем кнопки для дальнейших действий
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Еще один билет", callback_data="mode_recall")],
+        [InlineKeyboardButton(text="🏠 В главное меню", callback_data="to_start")]
+    ])
+    
+    await message.answer(result_text, parse_mode="HTML", reply_markup=keyboard)
+    
+    # Сбрасываем состояние FSM
+    await state.clear()
+
+@dp.callback_query(F.data == "to_start")
+async def process_to_start(callback: types.CallbackQuery, state: FSMContext):
+    """Возврат в главное меню по кнопке"""
+    await state.clear()
+    await callback.message.edit_text(
+        "👋 Возвращаемся в главное меню...",
+        reply_markup=get_main_menu()
+    )
+    await callback.answer()
+
+
+# --- Заглушка для режима "Код-ревью" ---
+@dp.callback_query(F.data == "mode_code")
 async def process_coming_soon(callback: types.CallbackQuery):
     """Временный обработчик для еще не реализованных кнопок"""
     await callback.answer("🚧 Этот режим в активной разработке! Скоро будет доступен.", show_alert=True)
@@ -104,7 +220,6 @@ async def process_coming_soon(callback: types.CallbackQuery):
 # --- Запуск ---
 async def main():
     print("🚀 Бот успешно запущен! Нажми Ctrl+C в терминале для остановки.")
-    # Игнорируем обновления, которые накопились, пока бот был выключен
     await dp.start_polling(bot, skip_updates=True)
 
 if __name__ == "__main__":

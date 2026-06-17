@@ -1,0 +1,4 @@
+echo "venv/" > .gitignore
+echo "database.db" >> .gitignore
+echo "__pycache__/" >> .gitignore
+echo "*.pyc" >> .gitignore

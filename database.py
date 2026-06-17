@@ -38,3 +38,12 @@ async def check_db_empty():
         cursor = await db.execute('SELECT COUNT(*) FROM tickets')
         result = await cursor.fetchone()
         return result[0] == 0
+
+async def get_random_ticket_with_code():
+    """Получает случайный билет, у которого есть и код, и описание ошибки."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            'SELECT * FROM tickets WHERE code IS NOT NULL AND code_error_desc IS NOT NULL ORDER BY RANDOM() LIMIT 1'
+        )
+        return await cursor.fetchone()

@@ -6,7 +6,7 @@ from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-
+from database import get_ticket, get_random_tickets
 from database import get_ticket, get_random_tickets
 
 # ⚠️ ТВОЙ ТОКЕН ОТ @BotFather
@@ -22,6 +22,9 @@ dp = Dispatcher()
 # --- Состояния FSM для режима "Активное вспоминание" ---
 class RecallStates(StatesGroup):
     waiting_for_answer = State()
+
+class CodeReviewStates(StatesGroup):
+    waiting_for_bug = State()
 
 # --- Клавиатуры ---
 def get_main_menu():
@@ -211,11 +214,55 @@ async def process_to_start(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-# --- Заглушка для режима "Код-ревью" ---
+# --- Режим "Код-ревью" ---
+
 @dp.callback_query(F.data == "mode_code")
-async def process_coming_soon(callback: types.CallbackQuery):
-    """Временный обработчик для еще не реализованных кнопок"""
-    await callback.answer("🚧 Этот режим в активной разработке! Скоро будет доступен.", show_alert=True)
+async def process_mode_code(callback: types.CallbackQuery, state: FSMContext):
+    """Обработчик нажатия на кнопку 'Код-ревью'"""
+    await callback.answer("💻 Генерирую задачу на поиск ошибки...")
+    
+    ticket = await get_random_ticket_with_code()
+    if not ticket:
+        await callback.message.edit_text("❌ В базе нет билетов с кодом и описанием ошибок.")
+        return
+    
+    # Сохраняем описание ошибки в FSM, чтобы показать его после ответа
+    await state.update_data(ticket_id=ticket['id'], error_desc=ticket['code_error_desc'])
+    
+    text = (
+        f"💻 <b>Режим 'Код-ревью'</b>\n\n"
+        f"🎫 <b>Билет №{ticket['id']}</b>: {ticket['title']}\n\n"
+        f"🐞 <b>Задание:</b> В этом коде на Си студенты чаще всего допускают одну критическую ошибку. "
+        f"Попробуй найти её и напиши, в чём она заключается (своими словами).\n\n"
+        f"<pre><code class='language-c'>{ticket['code']}</code></pre>\n\n"
+        f"💡 <i>Напиши свой вариант ответа. Чтобы выйти, нажми /start.</i>"
+    )
+    
+    await callback.message.edit_text(text, parse_mode="HTML")
+    await state.set_state(CodeReviewStates.waiting_for_bug)
+
+@dp.message(CodeReviewStates.waiting_for_bug)
+async def process_code_review_answer(message: Message, state: FSMContext):
+    """Обработчик ответа пользователя в режиме 'Код-ревью'"""
+    data = await state.get_data()
+    error_desc = data.get('error_desc')
+    ticket_id = data.get('ticket_id')
+    
+    # Показываем эталонное описание ошибки
+    text = (
+        f"✅ <b>Твой ответ принят!</b>\n\n"
+        f"🔍 <b>В чём заключалась ошибка (Билет №{ticket_id}):</b>\n"
+        f"{error_desc}\n\n"
+        f"Сравни со своим вариантом! Всё верно?\n"
+    )
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Еще одна ошибка", callback_data="mode_code")],
+        [InlineKeyboardButton(text="🏠 В главное меню", callback_data="to_start")]
+    ])
+    
+    await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
+    await state.clear()
 
 # --- Запуск ---
 async def main():

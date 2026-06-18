@@ -68,6 +68,37 @@ async def cmd_start(message: Message, state: FSMContext):
     )
     await message.answer(welcome_text, reply_markup=get_main_menu())
 
+# Максимальное количество билетов в базе
+MAX_TICKETS = 64 
+
+def build_ticket_response(ticket):
+    """Формирует красивый текст билета"""
+    response_text = (
+        f"🎫 <b>Билет №{ticket['id']}</b>\n"
+        f"📌 <b>Тема:</b> {ticket['title']}\n\n"
+        f"📚 <b>Теория:</b>\n{ticket['theory']}\n\n"
+    )
+    if ticket['code']:
+        response_text += f"💻 <b>Код на Си:</b>\n<pre><code class='language-c'>{ticket['code']}</code></pre>\n\n"
+    return response_text
+
+def get_ticket_keyboard(ticket_id):
+    """Создает клавиатуру с кнопками навигации"""
+    nav_buttons = []
+    # Кнопка "Предыдущий" появляется только если мы не на первом билете
+    if ticket_id > 1:
+        nav_buttons.append(InlineKeyboardButton(text="◀️ Предыдущий", callback_data=f"prev_ticket:{ticket_id}"))
+    # Кнопка "Следующий" появляется только если мы не на последнем
+    if ticket_id < MAX_TICKETS:
+        nav_buttons.append(InlineKeyboardButton(text="Следующий ▶️", callback_data=f"next_ticket:{ticket_id}"))
+    
+    # Собираем ряды кнопок
+    rows = [nav_buttons] if nav_buttons else []
+    rows.append([InlineKeyboardButton(text="🏠 В главное меню", callback_data="to_start")])
+    
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 @dp.callback_query(F.data == "mode_read")
 async def process_mode_read(callback: types.CallbackQuery):
     """Обработчик нажатия на кнопку 'Режим чтения'"""
@@ -100,12 +131,15 @@ async def process_ticket_number(message: Message):
         
     response_text += "<i>Напиши /start, чтобы получить 2 у Бортаковского.</i>"
     
-    await message.answer(response_text, parse_mode="HTML")
+    # Добавляем кнопки навигации
+    keyboard = get_ticket_keyboard(ticket_id)
+    
+    await message.answer(response_text, parse_mode="HTML", reply_markup=keyboard)
 
 @dp.callback_query(F.data == "mode_random")
 async def process_mode_random(callback: types.CallbackQuery):
     """Обработчик режима 'Рандом-экзамен'"""
-    await callback.answer("🎲 ...")
+    await callback.answer("🎲 Рандом-экзамен...")
     tickets = await get_random_tickets(2)
     
     if not tickets:
@@ -127,7 +161,7 @@ async def process_mode_random(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "mode_recall")
 async def process_mode_recall(callback: types.CallbackQuery, state: FSMContext):
     """Обработчик нажатия на кнопку 'Активное вспоминание'"""
-    await callback.answer("🧠 ...")
+    await callback.answer("🧠 Активное вспоминание...")
     
     # Получаем случайный билет
     tickets = await get_random_tickets(1)
@@ -207,7 +241,7 @@ async def process_to_start(callback: types.CallbackQuery, state: FSMContext):
     """Возврат в главное меню по кнопке"""
     await state.clear()
     await callback.message.edit_text(
-        "👋 ...",
+        "Главное меню",
         reply_markup=get_main_menu()
     )
     await callback.answer()
@@ -267,7 +301,7 @@ async def process_code_review_answer(message: Message, state: FSMContext):
 @dp.callback_query(F.data == "random_ticket_full")
 async def process_random_ticket_full(callback: types.CallbackQuery):
     """Показывает полный случайный билет"""
-    await callback.answer("🎲 ...")
+    await callback.answer("🎲 Случайный билет...")
     tickets = await get_random_tickets(1)
     if not tickets:
         await callback.message.edit_text("❌ В базе данных пока нет билетов.")
@@ -291,7 +325,35 @@ async def process_random_ticket_full(callback: types.CallbackQuery):
     
     await callback.message.edit_text(response_text, parse_mode="HTML", reply_markup=keyboard)
 
+# --- Навигация по билетам ---
 
+@dp.callback_query(F.data.startswith("prev_ticket:"))
+async def process_prev_ticket(callback: types.CallbackQuery):
+    """Обработчик кнопки 'Предыдущий билет'"""
+    # Достаем текущий номер билета из callback_data (например, из "prev_ticket:9" достаем "9")
+    current_id = int(callback.data.split(":")[1])
+    new_id = current_id - 1
+    
+    ticket = await get_ticket(new_id)
+    if ticket:
+        response_text = build_ticket_response(ticket)
+        keyboard = get_ticket_keyboard(new_id)
+        # edit_text меняет текст уже отправленного сообщения, не создавая новое
+        await callback.message.edit_text(response_text, parse_mode="HTML", reply_markup=keyboard)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("next_ticket:"))
+async def process_next_ticket(callback: types.CallbackQuery):
+    """Обработчик кнопки 'Следующий билет'"""
+    current_id = int(callback.data.split(":")[1])
+    new_id = current_id + 1
+    
+    ticket = await get_ticket(new_id)
+    if ticket:
+        response_text = build_ticket_response(ticket)
+        keyboard = get_ticket_keyboard(new_id)
+        await callback.message.edit_text(response_text, parse_mode="HTML", reply_markup=keyboard)
+    await callback.answer()
 
 # --- Запуск ---
 async def main():

@@ -1,6 +1,9 @@
 import asyncio
 import logging
 import re
+import os
+from dotenv import load_dotenv
+
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
@@ -9,8 +12,15 @@ from aiogram.fsm.state import State, StatesGroup
 
 from database import get_ticket, get_random_tickets
 
-# ⚠️ ТВОЙ ТОКЕН ОТ @BotFather
-BOT_TOKEN = "8955256805:AAExlc9_l0nQS42EkjI5B_c95qNJfZt8eY8"
+# 1. Загружаем переменные из .env файла (если он есть)
+load_dotenv()
+
+# 2. Получаем токен из переменной окружения
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+# 3. Защита: если токен не найден, бот сразу упадет с понятной ошибкой
+if not BOT_TOKEN:
+    raise ValueError("❌ Ошибка: BOT_TOKEN не найден! Проверь файл .env или настройки Railway.")
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
